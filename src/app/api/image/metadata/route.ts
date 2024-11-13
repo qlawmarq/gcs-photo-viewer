@@ -1,38 +1,8 @@
 import { Storage } from "@google-cloud/storage";
 import { NextResponse } from "next/server";
-import Sharp from "sharp";
+import ExifReader from "exifreader";
 
-interface GCSMetadata {
-  contentType: string;
-  size: string;
-  timeCreated: string;
-  updated: string;
-  id: string;
-  generation: string;
-  customMetadata?: Record<string, string>;
-}
-
-interface SharpMetadata {
-  format?: string;
-  size?: number;
-  width?: number;
-  height?: number;
-  space?: string;
-  channels?: number;
-  depth?: string;
-  density?: number;
-  chromaSubsampling?: string;
-  isProgressive?: boolean;
-  hasProfile?: boolean;
-  hasAlpha?: boolean;
-  orientation?: number;
-  exif?: Buffer;
-  icc?: Buffer;
-  iptc?: Buffer;
-  xmp?: Buffer;
-}
-
-interface ImageMetadata {
+export interface ImageMetadata {
   basic: {
     contentType: string;
     size: number;
@@ -51,6 +21,24 @@ interface ImageMetadata {
     compression: string;
     hasAlpha: boolean;
   };
+  exif?: {
+    make?: string;
+    model?: string;
+    fNumber?: number;
+    exposureTime?: string;
+    focalLength?: number;
+    iso?: number;
+    dateTaken?: string;
+    lens?: string;
+    software?: string;
+  };
+}
+
+interface GCSMetadata {
+  contentType: string;
+  size: string;
+  timeCreated: string;
+  updated: string;
 }
 
 export async function POST(request: Request) {
@@ -77,59 +65,66 @@ export async function POST(request: Request) {
 
     const [exists] = await file.exists();
     if (!exists) {
-      return new NextResponse("Image not found", { status: 404 });
+      return NextResponse.json({ error: "Image not found" }, { status: 404 });
     }
 
-    const [metadata, [buffer]] = await Promise.all([
+    const [[gcsMetadata], buffer] = await Promise.all([
       file.getMetadata() as unknown as Promise<[GCSMetadata]>,
-      file.download(),
+      file.download().then(([buf]) => buf),
     ]);
 
-    const response: ImageMetadata = {
+    const tags = ExifReader.load(buffer);
+
+    const metadata: ImageMetadata = {
       basic: {
-        contentType: metadata[0].contentType,
-        size: parseInt(metadata[0].size),
-        timeCreated: metadata[0].timeCreated,
-        updated: metadata[0].updated,
+        contentType: gcsMetadata.contentType,
+        size: parseInt(gcsMetadata.size),
+        timeCreated: gcsMetadata.timeCreated,
+        updated: gcsMetadata.updated,
       },
     };
 
-    try {
-      const sharpMetadata: SharpMetadata = await Sharp(buffer).metadata();
-
-      if (sharpMetadata.width && sharpMetadata.height) {
-        response.basic.dimensions = {
-          width: sharpMetadata.width,
-          height: sharpMetadata.height,
-        };
-      }
-
-      response.technical = {
-        format: sharpMetadata.format || "unknown",
-        space: sharpMetadata.space || "unknown",
-        channels: sharpMetadata.channels || 0,
-        depth: sharpMetadata.depth ? `${sharpMetadata.depth}-bit` : "unknown",
-        compression: sharpMetadata.chromaSubsampling || "none",
-        hasAlpha: sharpMetadata.hasAlpha || false,
+    if (Object.keys(tags).length > 0) {
+      metadata.exif = {
+        make: tags.Make?.description,
+        model: tags.Model?.description,
+        fNumber: tags.FNumber?.description
+          ? parseFloat(tags.FNumber.description)
+          : undefined,
+        exposureTime: tags.ExposureTime?.description,
+        focalLength: tags.FocalLength?.description
+          ? parseFloat(tags.FocalLength.description)
+          : undefined,
+        iso: tags.ISOSpeedRatings?.description
+          ? parseInt(tags.ISOSpeedRatings.description)
+          : undefined,
+        dateTaken: tags.DateTimeOriginal?.description,
+        lens: tags.LensModel?.description,
+        software: tags.Software?.description,
       };
-    } catch (sharpError) {
-      console.warn("Failed to extract technical metadata:", sharpError);
     }
 
-    return NextResponse.json(response, {
-      headers: {
-        "Cache-Control": "public, max-age=3600", // 1時間キャッシュ
-      },
-    });
+    const imageInfo = await require("sharp")(buffer).metadata();
+
+    metadata.basic.dimensions = {
+      width: imageInfo.width!,
+      height: imageInfo.height!,
+    };
+
+    metadata.technical = {
+      format: imageInfo.format,
+      space: imageInfo.space || "unknown",
+      channels: imageInfo.channels || 3,
+      depth: imageInfo.depth || "unknown",
+      compression: imageInfo.chromaSubsampling || "none",
+      hasAlpha: imageInfo.hasAlpha || false,
+    };
+
+    return NextResponse.json(metadata);
   } catch (error) {
-    console.error("Error fetching image metadata:", error);
+    console.error("Error fetching metadata:", error);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to fetch image metadata",
-      },
+      { error: "Failed to fetch metadata" },
       { status: 500 }
     );
   }
