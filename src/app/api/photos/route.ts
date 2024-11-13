@@ -8,6 +8,10 @@ export interface FileItem {
   url?: string;
 }
 
+interface GetFilesResponse {
+  prefixes?: string[];
+}
+
 export async function POST(request: Request) {
   try {
     const {
@@ -15,8 +19,6 @@ export async function POST(request: Request) {
       projectId,
       bucketName,
       prefix = "",
-      limit = 50,
-      pageToken,
     } = await request.json();
 
     const storage = new Storage({
@@ -26,74 +28,63 @@ export async function POST(request: Request) {
 
     const bucket = storage.bucket(bucketName);
 
-    try {
-      const [files] = await bucket.getFiles({
-        prefix: prefix,
-        maxResults: limit,
-        pageToken: pageToken,
-      });
+    const [, , folderResponse] = await bucket.getFiles({
+      prefix: prefix,
+      delimiter: "/",
+      autoPaginate: false,
+    });
 
-      const items: FileItem[] = [];
-      const processedFolders = new Set<string>();
+    const fetFilesResponse = folderResponse as GetFilesResponse;
 
-      for (const file of files) {
-        const fullPath = file.name;
-        const relativePath = prefix ? fullPath.slice(prefix.length) : fullPath;
+    const prefixes = (fetFilesResponse?.prefixes || []) as string[];
 
-        if (prefix && !fullPath.startsWith(prefix)) continue;
+    const folders: FileItem[] = prefixes.map((folderPath: string) => ({
+      name: folderPath.slice(prefix.length, -1),
+      type: "folder",
+      path: folderPath,
+    }));
 
-        if (fullPath === prefix) continue;
+    const [files] = await bucket.getFiles({
+      prefix: prefix,
+      delimiter: "/",
+      autoPaginate: false,
+    });
 
-        const pathParts = relativePath.split("/");
+    const imageFiles: FileItem[] = files
+      .filter((file) => {
+        if (file.name === prefix) return false;
+        return /\.(jpg|jpeg|png|gif|webp|svg|heic)$/i.test(file.name);
+      })
+      .map((file) => ({
+        name: file.name.slice(prefix.length),
+        type: "file",
+        path: file.name,
+        url: `https://storage.googleapis.com/${bucketName}/${file.name}`,
+      }));
 
-        if (pathParts.length > 1) {
-          const folderName = pathParts[0];
-          const folderPath = prefix + folderName + "/";
+    // フォルダとファイルを結合してソート
+    const items = [
+      ...folders.sort((a, b) => a.name.localeCompare(b.name)),
+      ...imageFiles.sort((a, b) => a.name.localeCompare(b.name)),
+    ];
 
-          if (!processedFolders.has(folderPath)) {
-            processedFolders.add(folderPath);
-            items.push({
-              name: folderName,
-              type: "folder",
-              path: folderPath,
-            });
-          }
-        } else if (pathParts[0]) {
-          const isImage = /\.(jpg|jpeg|png|gif|webp|svg|heic)$/i.test(fullPath);
-          if (isImage) {
-            items.push({
-              name: pathParts[0],
-              type: "file",
-              path: fullPath,
-              url: `https://storage.googleapis.com/${bucketName}/${fullPath}`,
-            });
-          }
-        }
-      }
+    console.log("Response summary:", {
+      totalItems: items.length,
+      folders: folders.length,
+      files: imageFiles.length,
+      prefix: prefix,
+    });
 
-      items.sort((a, b) => {
-        if (a.type === b.type) {
-          return a.name.localeCompare(b.name);
-        }
-        return a.type === "folder" ? -1 : 1;
-      });
-
-      return NextResponse.json({
-        items,
-        currentPath: prefix,
-        hasMore: items.length === limit,
-      });
-    } catch (getFilesError) {
-      console.error("Error getting files:", getFilesError);
-      throw getFilesError;
-    }
+    return NextResponse.json({
+      items,
+      currentPath: prefix,
+    });
   } catch (error) {
     console.error("Error in API:", error);
     return NextResponse.json(
       {
         error:
           error instanceof Error ? error.message : "Failed to fetch photos",
-        details: error instanceof Error ? error.stack : undefined,
       },
       { status: 500 }
     );
