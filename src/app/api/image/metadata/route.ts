@@ -73,8 +73,7 @@ export async function POST(request: Request) {
       file.download().then(([buf]) => buf),
     ]);
 
-    // EXIFデータの抽出
-    const tags = await ExifReader.load(buffer);
+    const tags = ExifReader.load(buffer);
 
     const metadata: ImageMetadata = {
       basic: {
@@ -85,7 +84,6 @@ export async function POST(request: Request) {
       },
     };
 
-    // EXIFデータがある場合は追加
     if (Object.keys(tags).length > 0) {
       metadata.exif = {
         make: tags.Make?.description,
@@ -106,7 +104,6 @@ export async function POST(request: Request) {
       };
     }
 
-    // 画像の技術情報を取得
     const imageInfo = await require("sharp")(buffer).metadata();
 
     metadata.basic.dimensions = {

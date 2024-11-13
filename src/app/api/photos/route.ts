@@ -62,7 +62,6 @@ export async function POST(request: Request) {
         url: `https://storage.googleapis.com/${bucketName}/${file.name}`,
       }));
 
-    // フォルダとファイルを結合してソート
     const items = [
       ...folders.sort((a, b) => a.name.localeCompare(b.name)),
       ...imageFiles.sort((a, b) => a.name.localeCompare(b.name)),
